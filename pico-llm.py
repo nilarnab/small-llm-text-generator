@@ -371,7 +371,22 @@ def monosemantic_analysis_for_token(token_id, model, enc, device="cpu", top_n=5)
 ################################################################################
 
 def nucleus_sampling(logits, p=0.95):
-    return torch.argmax(logits).item()
+    probs = F.softmax(logits, dim=-1)  # probabilities
+    if p >= 1.0:
+        return torch.multinomial(probs, num_samples=1).item()  # from full dist
+
+    # sort + total p
+    sorted_probs, sorted_indices = torch.sort(probs, descending=True)
+    cumulative = torch.cumsum(sorted_probs, dim=-1)
+
+    # n of tokens need + choosing
+    cutoff = torch.searchsorted(cumulative, torch.tensor(p, device=logits.device)).item() + 1
+    cutoff = max(1, cutoff)
+    top_probs = sorted_probs[:cutoff]
+    top_indices = sorted_indices[:cutoff]
+    top_probs = top_probs / top_probs.sum()  # normalise again
+    next_idx = torch.multinomial(top_probs, num_samples=1).item()  # sample one from the redist
+    return top_indices[next_idx].item()
 
 
 def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",

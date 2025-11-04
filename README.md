@@ -14,3 +14,8 @@ There are different kinds of linked lists. One is singly linked list. There are 
 ```
 
 So, the point is our model will be able to answer as a sequence of texts and images. Note that we ARE NOT PLANNIGN to generate images. We just want to generate the connection like `NODE 1 -> NODE 2` or something like that.
+
+
+### Possible things we can do
+* Train LLMS in two very different types of literature, one for example trained by older literature, and other in modern and make the models "converse" with each other.
+* Make a question and answering model

@@ -17,6 +17,11 @@ import torch.nn.functional as F
 from datasets import load_dataset
 import tiktoken
 
+from livelossplot import PlotLosses
+
+
+import matplotlib.pyplot as plt
+from IPython.display import clear_output  # works nicely in notebooks
 
 ################################################################################
 # 1. Command-line arg parsing
@@ -269,6 +274,8 @@ class TransformerModel(nn.Module):
         self.norm_1 = RMSNorm(d_model)
         self.norm_2 = RMSNorm(d_model)
         self.norm_3 = RMSNorm(d_model)
+        self.norm_4 = RMSNorm(d_model)
+        self.norm_5 = RMSNorm(d_model)
 
 
         self.mlp_g_1 = nn.Sequential(
@@ -286,6 +293,16 @@ class TransformerModel(nn.Module):
             nn.ReLU(),
             nn.Linear(mlp_g_hidden_layer_output, d_model)
         )
+        self.mlp_g_4 = nn.Sequential(
+            nn.Linear(d_model, mlp_g_hidden_layer_output),
+            nn.ReLU(),
+            nn.Linear(mlp_g_hidden_layer_output, d_model)
+        )
+        self.mlp_g_5 = nn.Sequential(
+            nn.Linear(d_model, mlp_g_hidden_layer_output),
+            nn.ReLU(),
+            nn.Linear(mlp_g_hidden_layer_output, d_model)
+        )
 
         self.unembedding = nn.Linear(d_model, vocab_size)
 
@@ -298,20 +315,33 @@ class TransformerModel(nn.Module):
         mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
         mask = mask.masked_fill(mask, float('-inf'))
 
+        x = self.norm_1(x)
         attention_out1, attn_weights1 = self.attn1(x, x, x, attn_mask=mask)
         x = x + attention_out1
+        x = self.norm_2(x)
         x = x + self.mlp_g_1(x)
-        x = self.norm_1(x)
 
+        x = self.norm_3(x)
         attention_out2, attn_weights2 = self.attn2(x, x, x, attn_mask=mask)
         x = x + attention_out2
+        x = self.norm_4(x)
         x = x + self.mlp_g_2(x)
-        x = self.norm_2(x)
+
 
         # attention_out3, attn_weights3 = self.attn3(x, x, x, attn_mask=mask)
         # x = x + attention_out3
         # x = x + self.mlp_g_3(x)
         # x = self.norm_3(x)
+        #
+        # attention_out4, attn_weights4 = self.attn4(x, x, x, attn_mask=mask)
+        # x = x + attention_out4
+        # x = x + self.mlp_g_4(x)
+        # x = self.norm_4(x)
+        #
+        # attention_out5, attn_weights5 = self.attn5(x, x, x, attn_mask=mask)
+        # x = x + attention_out5
+        # x = x + self.mlp_g_5(x)
+        # x = self.norm_5(x)
 
         #
         # attention_out4, attn_weights4 = self.attn4(x, x, x, attn_mask=mask)
@@ -421,6 +451,9 @@ def train_one_model(model,
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
 
+    # for animated view of the los
+    liveloss = PlotLosses()
+
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')
 
@@ -459,6 +492,10 @@ def train_one_model(model,
             total_loss += loss.item()
             partial_loss += loss.item()
             partial_count += 1
+
+            # update the loss now
+            liveloss.update({'training loss': (partial_loss / partial_count)})
+            liveloss.send()
 
             if batch_idx % log_steps == 0:
                 avg_part_loss = partial_loss / partial_count
@@ -527,6 +564,10 @@ def train_one_model(model,
                 break
 
         avg_loss = total_loss / step_in_epoch
+
+        # update the loss now
+        liveloss.update({'training loss': avg_loss})
+        liveloss.send()
 
         if avg_loss < MIN_LOSS_VALUE:
             # epoch is over, possibly store the checkpoint

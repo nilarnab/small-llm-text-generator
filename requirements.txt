@@ -5,3 +5,5 @@ scikit-learn
 matplotlib
 datasets>=2.0.0
 tiktoken>=0.4.0
+ipython
+livelossplot

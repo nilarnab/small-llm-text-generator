@@ -17,6 +17,11 @@ import torch.nn.functional as F
 from datasets import load_dataset
 import tiktoken
 
+from livelossplot import PlotLosses
+
+
+import matplotlib.pyplot as plt
+from IPython.display import clear_output  # works nicely in notebooks
 
 ################################################################################
 # 1. Command-line arg parsing
@@ -254,38 +259,47 @@ class RMSNorm(nn.Module):
         return self.w * x_hat
 
 
-
-class TransformerModel(nn.Module):
-    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048):
+class TransformerBlock(nn.Module):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, mlp_g_hidden_layer_output=2048):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model) # not sure about d_model
-        self.attn1 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.attn2 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.attn3 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.attn4 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-        self.attn5 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
-
-        # self.norm = nn.LayerNorm(d_model)
         self.norm_1 = RMSNorm(d_model)
+        self.attn1 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
         self.norm_2 = RMSNorm(d_model)
-        self.norm_3 = RMSNorm(d_model)
-
-
         self.mlp_g_1 = nn.Sequential(
             nn.Linear(d_model, mlp_g_hidden_layer_output),
             nn.ReLU(),
             nn.Linear(mlp_g_hidden_layer_output, d_model)
         )
-        self.mlp_g_2 = nn.Sequential(
-            nn.Linear(d_model, mlp_g_hidden_layer_output),
-            nn.ReLU(),
-            nn.Linear(mlp_g_hidden_layer_output, d_model)
-        )
-        self.mlp_g_3 = nn.Sequential(
-            nn.Linear(d_model, mlp_g_hidden_layer_output),
-            nn.ReLU(),
-            nn.Linear(mlp_g_hidden_layer_output, d_model)
-        )
+
+
+    def forward(self, x):
+        mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
+        mask = mask.masked_fill(mask, float('-inf'))
+
+        x_old = x
+        x = self.norm_1(x)
+        attention_out1, attn_weights1 = self.attn1(x, x, x, attn_mask=mask)
+        x_old = x_old + attention_out1
+        x = x_old + self.mlp_g_1(self.norm_2(x_old))
+
+        return x
+
+
+class TransformerModel(nn.Module):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, d_model) # not sure about d_model
+
+        # self.block1 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block2 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block3 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block4 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block5 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block6 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block7 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+        # self.block8 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
+
+        self.blocks = [TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output) for i in range(n_blocks)]
 
         self.unembedding = nn.Linear(d_model, vocab_size)
 
@@ -294,33 +308,17 @@ class TransformerModel(nn.Module):
     def forward(self, tokens_seq):
         x = self.embedding(tokens_seq)
 
-        seq_len = x.size(1)
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1).bool()
-        mask = mask.masked_fill(mask, float('-inf'))
+        # x = self.block1(x)
+        # x = self.block2(x)
+        # x = self.block3(x)
+        # x = self.block4(x)
+        # x = self.block5(x)
+        # x = self.block6(x)
+        # x = self.block7(x)
+        # x = self.block8(x)
 
-        attention_out1, attn_weights1 = self.attn1(x, x, x, attn_mask=mask)
-        x = x + attention_out1
-        x = x + self.mlp_g_1(x)
-        x = self.norm_1(x)
-
-        attention_out2, attn_weights2 = self.attn2(x, x, x, attn_mask=mask)
-        x = x + attention_out2
-        x = x + self.mlp_g_2(x)
-        x = self.norm_2(x)
-
-        # attention_out3, attn_weights3 = self.attn3(x, x, x, attn_mask=mask)
-        # x = x + attention_out3
-        # x = x + self.mlp_g_3(x)
-        # x = self.norm_3(x)
-
-        #
-        # attention_out4, attn_weights4 = self.attn4(x, x, x, attn_mask=mask)
-        # x = x + attention_out4
-        #
-        # attention_out5, attn_weights5 = self.attn5(x, x, x, attn_mask=mask)
-        # x = x + attention_out5
-
-        # attention_out2, attn_weights1 = self.attn(embedded_tokens, embedded_tokens, embedded_tokens)
+        for i in range(len(self.blocks)):
+            x = self.blocks[i](x)
 
         logits = self.unembedding(x)
 
@@ -436,6 +434,9 @@ def train_one_model(model,
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
 
+    # for animated view of the los
+    liveloss = PlotLosses()
+
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')
 
@@ -475,27 +476,35 @@ def train_one_model(model,
             partial_loss += loss.item()
             partial_count += 1
 
+            avg_part_loss = partial_loss / partial_count
+
+            # update the loss now
+            liveloss.update({'training loss': avg_part_loss})
+            liveloss.send()
+
+            # original
             if batch_idx % log_steps == 0:
-                avg_part_loss = partial_loss / partial_count
                 print(f"[{model_name}] Epoch {epoch}/{epochs}, "
                       f"Step {batch_idx}/{len(loader)} (global step: {global_step}) "
                       f"Partial Avg Loss: {avg_part_loss:.4f}")
 
-                if avg_part_loss < MIN_LOSS_VALUE:
-                    # Also possibly put in checkpoint
-                    try:
-                        print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")
-                        ckpt_path = os.path.join(save_dir, f"step_{global_step}_LOSS_{avg_part_loss:.4f}.pt")
-                        torch.save({
-                            'epoch': epoch,
-                            'global_step': global_step,
-                            'model_state_dict': model.state_dict(),
-                            'optimizer_state_dict': optimizer.state_dict(),
-                            'loss': loss.item()
-                        }, ckpt_path)
-                        MIN_LOSS_VALUE = avg_part_loss
-                    except Exception as e:
-                        print(f"WARNING: Could not save checkpoint for epoch {epoch}, due to error", e)
+            if avg_part_loss < MIN_LOSS_VALUE:
+                print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")
+
+
+                try:
+                    print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")
+                    ckpt_path = os.path.join(save_dir, f"step_{global_step}_LOSS_{avg_part_loss:.4f}.pt")
+                    torch.save({
+                        'epoch': epoch,
+                        'global_step': global_step,
+                        'model_state_dict': model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'loss': loss.item()
+                    }, ckpt_path)
+                    MIN_LOSS_VALUE = avg_part_loss
+                except Exception as e:
+                    print(f"WARNING: Could not save checkpoint for epoch {epoch}, due to error", e)
 
                 partial_loss = 0.0
                 partial_count = 0
@@ -542,6 +551,10 @@ def train_one_model(model,
                 break
 
         avg_loss = total_loss / step_in_epoch
+
+        # update the loss now
+        liveloss.update({'training loss': avg_loss})
+        liveloss.send()
 
         if avg_loss < MIN_LOSS_VALUE:
             # epoch is over, possibly store the checkpoint
@@ -674,8 +687,10 @@ def main():
         hidden_size=embed_size
     ).to(device)
 
-    transformer = TransformerModel(
-    ).to(device)
+    transformer = TransformerModel(n_heads=1, n_blocks=1).to(device)
+
+    # heads 1, blocks 1 1.916
+    # heads 128, blocks 2.055
 
     models = {
       # "kgram_mlp_seq": kgram_model,

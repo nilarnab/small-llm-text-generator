@@ -19,6 +19,10 @@ import tiktoken
 
 from livelossplot import PlotLosses
 
+# os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
+
+# this shit might be really scary
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 import matplotlib.pyplot as plt
 from IPython.display import clear_output  # works nicely in notebooks
@@ -59,6 +63,12 @@ def parse_args():
     # Newly added device argument:
     parser.add_argument("--device_id", type=str, default="cuda:0",
                         help="Torch device identifier (default='cuda:0'). If CUDA is unavailable, fallback to 'cpu'.")
+
+    parser.add_argument("--checkpoint_path", type=str, default=None,
+                        help="If there was an incomplete run from where we can continue")
+
+    parser.add_argument("--batch_size", type=str, default="4",
+                        help="Get the batch size.")
 
     args = parser.parse_args()
     return args
@@ -267,14 +277,17 @@ class TransformerBlock(nn.Module):
         self.norm_2 = RMSNorm(d_model)
         self.mlp_g_1 = nn.Sequential(
             nn.Linear(d_model, mlp_g_hidden_layer_output),
-            nn.ReLU(),
+            nn.GELU(),
             nn.Linear(mlp_g_hidden_layer_output, d_model)
         )
 
 
     def forward(self, x):
-        mask = torch.triu(torch.ones(x.size(1), x.size(1), device=x.device), diagonal=1).bool()
-        mask = mask.masked_fill(mask, float('-inf'))
+        x = x.transpose(0, 1)
+        seq_len = x.size(1)
+        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1)
+        mask = mask.masked_fill(mask == 1, float('-inf'))
+
 
         x_old = x
         x = self.norm_1(x)
@@ -286,9 +299,10 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model) # not sure about d_model
+        self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
         # self.block1 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
         # self.block2 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
@@ -299,7 +313,7 @@ class TransformerModel(nn.Module):
         # self.block7 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
         # self.block8 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
 
-        self.blocks = [TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output) for i in range(n_blocks)]
+        self.blocks = nn.ModuleList([TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output) for i in range(n_blocks)])
 
         self.unembedding = nn.Linear(d_model, vocab_size)
 
@@ -307,6 +321,10 @@ class TransformerModel(nn.Module):
 
     def forward(self, tokens_seq):
         x = self.embedding(tokens_seq)
+
+        batch_size, seq_len = tokens_seq.shape
+        positions = torch.arange(seq_len, device=tokens_seq.device).unsqueeze(0) # TODO: learn how thi is wroking
+        x = x + self.position_embedding(positions)
 
         # x = self.block1(x)
         # x = self.block2(x)
@@ -369,6 +387,7 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
       - We pick next token (greedy or top-p), append to context_tokens.
       - Optionally do monosemantic analysis on that newly generated token.
     """
+
     was_training = model.training
     model.eval()
     with torch.no_grad():
@@ -429,11 +448,11 @@ def train_one_model(model,
                     max_steps_per_epoch=None,
                     enc=None,
                     monosemantic_info=None,
+                    checkpoint_path=None,
                     prompt="Once upon a"):
     """
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
-
     # for animated view of the los
     liveloss = PlotLosses()
 
@@ -445,6 +464,20 @@ def train_one_model(model,
     start_time = time.time()
     next_sample_time = start_time
     global_step = 0
+
+    if checkpoint_path is not None and os.path.exists(checkpoint_path):
+        print(f"\n Loading checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location=device)
+
+        model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        start_epoch = checkpoint.get('epoch', 1)
+        global_step = checkpoint.get('global_step', 0)
+        MIN_LOSS_VALUE = checkpoint.get('loss', float('inf'))
+
+        print(f" Resumed from epoch {start_epoch}, global_step {global_step}, previous loss {MIN_LOSS_VALUE:.4f}")
+    else:
+        print("\n Starting fresh training (no checkpoint loaded).")
 
     # create new dir
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -479,8 +512,8 @@ def train_one_model(model,
             avg_part_loss = partial_loss / partial_count
 
             # update the loss now
-            liveloss.update({'training loss': avg_part_loss})
-            liveloss.send()
+            # liveloss.update({'training loss': avg_part_loss})
+            # liveloss.send()
 
             # original
             if batch_idx % log_steps == 0:
@@ -553,8 +586,8 @@ def train_one_model(model,
         avg_loss = total_loss / step_in_epoch
 
         # update the loss now
-        liveloss.update({'training loss': avg_loss})
-        liveloss.send()
+        # liveloss.update({'training loss': avg_loss})
+        # liveloss.send()
 
         if avg_loss < MIN_LOSS_VALUE:
             # epoch is over, possibly store the checkpoint
@@ -587,9 +620,10 @@ def main():
     chunk_size = args.kgram_chunk_size
 
     embed_size = args.embed_size
-    batch_size = 16
+    batch_size = int(args.batch_size)
     num_epochs = 3
-    learning_rate = 1e-3
+    # learning_rate = 1e-3
+    learning_rate = 1e-5
 
     block_size = args.block_size
     train_subset_size = 20000
@@ -601,13 +635,27 @@ def main():
 
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
-    if requested_device_id.startswith("cuda") and not torch.cuda.is_available():
-        print(f"Requested device '{requested_device_id}' but CUDA not available. Falling back to CPU.")
-        device = torch.device("cpu")
-    else:
-        device = torch.device(requested_device_id)
 
-    print(f"Using device: {device}, block_size={block_size}, kgram_k={k}, chunk_size={chunk_size}, embed_size={embed_size}")
+    if requested_device_id.startswith("cuda"):
+        if torch.cuda.is_available():
+            device = torch.device(requested_device_id)
+        else:
+            print(f"Requested device '{requested_device_id}' but CUDA not available. Falling back to CPU.")
+            device = torch.device("cpu")
+
+    elif requested_device_id == "mps":
+        if torch.backends.mps.is_available():
+            print("mps is available")
+            device = torch.device("mps")
+        else:
+            print("Requested device 'mps' but MPS not available. Falling back to CPU.")
+            device = torch.device("cpu")
+
+    else:
+        # Default case (e.g. 'cpu')
+        device = torch.device("cpu")
+
+    print(f"Using device: {device}, block_size={block_size}, kgram_k={k}, chunk_size={chunk_size}, embed_size={embed_size} batch_size={batch_size}")
 
     ############################################################################
     # Data
@@ -687,10 +735,11 @@ def main():
         hidden_size=embed_size
     ).to(device)
 
-    transformer = TransformerModel(n_heads=1, n_blocks=1).to(device)
+    transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(device)
 
     # heads 1, blocks 1 1.916
     # heads 128, blocks 2.055
+    # heads 4,  blocks min 2.6424, running 2.811
 
     models = {
       # "kgram_mlp_seq": kgram_model,
@@ -716,6 +765,7 @@ def main():
             sample_interval=sample_interval_seconds,
             max_steps_per_epoch=max_steps_per_epoch,
             enc=enc,
+            checkpoint_path=args.checkpoint_path,
             prompt=args.prompt  # <--- Pass the user-specified prompt here
         )
 

@@ -22,7 +22,7 @@ from livelossplot import PlotLosses
 # os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
 
 # this shit might be really scary
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+# os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 import matplotlib.pyplot as plt
 from IPython.display import clear_output  # works nicely in notebooks
@@ -250,7 +250,7 @@ class LSTMSeqModel(nn.Module):
 
 
 ################################################################################
-# 5. Our "stub" Transformer with KV-cache 
+# 5. Our "stub" Transformer with KV-cache
 #    Very slow Python loop for training. Multi-head sums head outputs.
 ################################################################################
 
@@ -453,6 +453,9 @@ def train_one_model(model,
     """
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
+    # for animated view of the los
+    liveloss = PlotLosses()
+
     # for animated view of the los
     liveloss = PlotLosses()
 

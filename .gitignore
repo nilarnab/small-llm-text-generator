@@ -2,3 +2,4 @@
 .idea
 checkpoints
 metrics
+global_step_timing

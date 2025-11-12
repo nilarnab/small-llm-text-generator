@@ -27,7 +27,7 @@ from torch.utils.data import random_split
 # os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
 
 # this shit might be really scary
-os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+# os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 import matplotlib.pyplot as plt
 from IPython.display import clear_output  # works nicely in notebooks
@@ -170,62 +170,59 @@ def compute_next_token_loss(logits, tokens):
 
 
 class KGramMLPSeqModel(nn.Module):
-    """
-    For each position t in [0..seq_len-1], gather the last k tokens => one-hot => MLP => logits.
-    Return (seq_len, batch, vocab_size).
-
-    Potentially very large memory usage for big vocab or seq_len. chunk_size helps mitigate overhead.
-    """
-
-    def __init__(self, vocab_size, k=3, embed_size=1024, num_inner_layers=1, chunk_size=1):
+    def __init__(self, vocab_size, k=3, embed_size=512, num_inner_layers=1, hidden_dim=None, chunk_size = 1):
         super().__init__()
         self.k = k
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.num_inner_layers = num_inner_layers
         self.chunk_size = chunk_size
+        self.use_cache = False # this is for kv cache which should not be applicable here.
 
-        # fill in
+        self.embedding = nn.Embedding(vocab_size, embed_size)
 
-        self.net = None
 
-    def forward(self, tokens_seq):
+        if hidden_dim is None:
+            hidden_dim = embed_size // 2
+
+
+        layers = [nn.Linear(k * embed_size, hidden_dim), nn.GELU()]
+        for _ in range(num_inner_layers - 1):
+            layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
+        layers.append(nn.Linear(hidden_dim, vocab_size))
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
-        return: (seq_len, batch, vocab_size)
-        We'll do a loop over time steps. chunk_size can reduce overhead.
+        Return: (seq_len, batch, vocab_size)
         """
         seq_len, batch_size = tokens_seq.shape
-        outputs = []
+        device = tokens_seq.device
+ 
+        pad = torch.zeros(self.k - 1, batch_size, dtype=torch.long, device=device)
+        padded = torch.cat([pad, tokens_seq], dim=0)  
+ 
+        context_windows = []
+        for i in range(self.k):
+            context_windows.append(padded[i:i + seq_len])
+        contexts = torch.stack(context_windows, dim=2)   
+        embedded = self.embedding(contexts)  
+        flat = embedded.reshape(seq_len, batch_size, self.k * self.embed_size)
 
-        start = 0
-        while start < seq_len:
-            end = min(start + self.chunk_size, seq_len)
-            block_outputs = []
-            for t in range(start, end):
-                batch_logits = []
-                for b in range(batch_size):
-                    if t < self.k:
-                        needed = self.k - t
-                        context_ids = [0]*needed + tokens_seq[:t, b].tolist()
-                    else:
-                        context_ids = tokens_seq[t-self.k:t, b].tolist()
-
-                    context_oh = F.one_hot(
-                        torch.tensor(context_ids, dtype=torch.long, device=tokens_seq.device),
-                        num_classes=self.vocab_size
-                    )
-                    context_flat = context_oh.flatten().float().unsqueeze(0)
-                    logits_b = self.net(context_flat)  # (1, vocab_size)
-                    batch_logits.append(logits_b)
-                block_outputs.append(torch.cat(batch_logits, dim=0).unsqueeze(0))  # (1, batch, vocab_size)
-
-            block_outputs = torch.cat(block_outputs, dim=0)  # (chunk_size, batch, vocab_size)
-            outputs.append(block_outputs)
-            start = end
-
-        outputs = torch.cat(outputs, dim=0)  # (seq_len, batch, vocab_size)
-        return outputs
+        
+        
+        chunks = torch.split(flat, self.chunk_size, dim=0)
+        
+        logit_chunks = []
+        for chunk in chunks:
+            logit_chunk = self.net(chunk) 
+            logit_chunks.append(logit_chunk)
+            
+        logits = torch.cat(logit_chunks, dim=0)
+         
+        return logits
 
 
 ################################################################################
@@ -563,8 +560,6 @@ def train_one_model(model,
     """
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
-    # for animated view of the los
-    liveloss = PlotLosses()
 
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')

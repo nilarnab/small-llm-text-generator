@@ -193,6 +193,17 @@ class KGramMLPSeqModel(nn.Module):
 
         self.net = nn.Sequential(*layers)
 
+        if hidden_dim is None:
+            hidden_dim = embed_size // 2
+
+
+        layers = [nn.Linear(k * embed_size, hidden_dim), nn.GELU()]
+        for _ in range(num_inner_layers - 1):
+            layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
+        layers.append(nn.Linear(hidden_dim, vocab_size))
+
+        self.net = nn.Sequential(*layers)
+
     def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
@@ -560,6 +571,11 @@ def train_one_model(model,
     """
     We add `prompt` as an explicit argument so we can pass it down from main().
     """
+    # for animated view of the los
+    liveloss = PlotLosses()
+
+    # for animated view of the los
+    liveloss = PlotLosses()
 
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')
@@ -715,6 +731,10 @@ def train_one_model(model,
 
         avg_loss = total_loss / step_in_epoch
         avg_val_loss = get_validation_loss(model, val_loader, device)
+
+        # update the loss now
+        # liveloss.update({'training loss': avg_loss})
+        # liveloss.send()
 
         # update the loss now
         # liveloss.update({'training loss': avg_loss})
@@ -904,7 +924,7 @@ def main():
     # heads 4,  blocks min 2.6424, running 2.811
 
     models = {
-      # "kgram_mlp_seq": kgram_model,
+      "kgram_mlp_seq": kgram_model,
       #   "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       "transformer": transformer, # <-- our transformer model

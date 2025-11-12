@@ -1,5 +1,6 @@
 # starter code by matus & o1-pro
 import argparse
+import csv
 import os
 import time
 import random
@@ -11,6 +12,8 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 
+import pandas as pd
+
 # We do not import numpy or scikit-learn, so we implement a naive k-means in pure PyTorch.
 # If you prefer scikit-learn, you can adapt the code.
 
@@ -18,6 +21,8 @@ from datasets import load_dataset
 import tiktoken
 
 from livelossplot import PlotLosses
+from sklearn.model_selection import train_test_split
+from torch.utils.data import random_split
 
 # os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
 
@@ -69,6 +74,7 @@ def parse_args():
 
     parser.add_argument("--batch_size", type=str, default="4",
                         help="Get the batch size.")
+    parser.add_argument("--write_global_step_time", type=str, default="FALSE",)
 
     args = parser.parse_args()
     return args
@@ -171,6 +177,7 @@ class KGramMLPSeqModel(nn.Module):
         self.embed_size = embed_size
         self.num_inner_layers = num_inner_layers
         self.chunk_size = chunk_size
+        self.use_cache = False # this is for kv cache which should not be applicable here.
 
         self.embedding = nn.Embedding(vocab_size, embed_size)
 
@@ -186,7 +193,18 @@ class KGramMLPSeqModel(nn.Module):
 
         self.net = nn.Sequential(*layers)
 
-    def forward(self, tokens_seq):
+        if hidden_dim is None:
+            hidden_dim = embed_size // 2
+
+
+        layers = [nn.Linear(k * embed_size, hidden_dim), nn.GELU()]
+        for _ in range(num_inner_layers - 1):
+            layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
+        layers.append(nn.Linear(hidden_dim, vocab_size))
+
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
         Return: (seq_len, batch, vocab_size)
@@ -269,7 +287,7 @@ class TransformerBlock(nn.Module):
     def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, mlp_g_hidden_layer_output=2048):
         super().__init__()
         self.norm_1 = RMSNorm(d_model)
-        self.attn1 = nn.MultiheadAttention(d_model, n_heads, batch_first=True)
+        self.attn1 = nn.MultiheadAttention(d_model, n_heads, batch_first=False)
         self.norm_2 = RMSNorm(d_model)
         self.mlp_g_1 = nn.Sequential(
             nn.Linear(d_model, mlp_g_hidden_layer_output),
@@ -278,24 +296,49 @@ class TransformerBlock(nn.Module):
         )
 
 
-    def forward(self, x):
-        x = x.transpose(0, 1)
-        seq_len = x.size(1)
-        mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1)
-        mask = mask.masked_fill(mask == 1, float('-inf'))
-
+    def forward(self, x, kv_cache=None):
+        # x = x.transpose(0, 1)
+        # print("shpae of x", x.shape, x.transpose(0, 1).shape)
+        # batch first -> (batch, seq len, embed)
 
         x_old = x
         x = self.norm_1(x)
-        attention_out1, attn_weights1 = self.attn1(x, x, x, attn_mask=mask)
-        x_old = x_old + attention_out1
+        seq_len = x.size(0)
+        # print("seq_len", seq_len, x.shape)
+
+        # print("x after norm", x.shape)
+        query = x
+        key = x
+        value = x
+
+        if kv_cache is not None:
+            # we got a cache !!!!!
+            last_token = x[:, -1:, :]
+            query = x[:, -1:, :]
+            key = torch.cat([kv_cache['key'], last_token], dim=0)
+            value = torch.cat([kv_cache['value'], last_token], dim=0)
+            mask = None
+        else:
+            mask = torch.triu(torch.ones(seq_len, seq_len, device=x.device), diagonal=1)
+            mask = mask.masked_fill(mask == 1, float('-inf'))
+
+        attention_out1, attn_weights1 = self.attn1(query, key, value, attn_mask=mask)
+
+        if kv_cache is not None:
+            x_old[:, -1:, :] = x_old[:, -1:, :] + attention_out1
+        else:
+            x_old = x_old + attention_out1
+
         x = x_old + self.mlp_g_1(self.norm_2(x_old))
 
-        return x
+        new_kv_cache = {"key": key.detach(), "value": value.detach()}
+
+
+        return x, new_kv_cache
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024, use_kv_cache=False):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model) # not sure about d_model
         self.position_embedding = nn.Embedding(max_seq_len, d_model)
@@ -310,16 +353,26 @@ class TransformerModel(nn.Module):
         # self.block8 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
 
         self.blocks = nn.ModuleList([TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output) for i in range(n_blocks)])
-
         self.unembedding = nn.Linear(d_model, vocab_size)
+        self.kv_cache = [None] * n_blocks
+        self.use_cache = use_kv_cache
 
         pass
 
-    def forward(self, tokens_seq):
+    def forward(self, tokens_seq, use_cache=False):
         x = self.embedding(tokens_seq)
 
         batch_size, seq_len = tokens_seq.shape
-        positions = torch.arange(seq_len, device=tokens_seq.device).unsqueeze(0) # TODO: learn how thi is wroking
+
+        if use_cache and self.kv_cache[0] is not None:
+            cache_len = self.kv_cache[0]['key'].size(1)
+            positions = torch.arange(cache_len, cache_len + seq_len, device=tokens_seq.device).unsqueeze(0)
+        else:
+            positions = torch.arange(seq_len, device=tokens_seq.device).unsqueeze(0)
+            if use_cache:
+                # Starting new generation - reset cache
+                self.kv_cache = [None] * len(self.blocks)
+
         x = x + self.position_embedding(positions)
 
         # x = self.block1(x)
@@ -332,11 +385,16 @@ class TransformerModel(nn.Module):
         # x = self.block8(x)
 
         for i in range(len(self.blocks)):
-            x = self.blocks[i](x)
+            kv_cache_layer_i = self.kv_cache[i] if use_cache else None
+            x, new_kv_cache = self.blocks[i](x, kv_cache_layer_i)
+            self.kv_cache[i] = new_kv_cache
 
         logits = self.unembedding(x)
 
         return logits
+
+    def reset_cache(self):
+        self.kv_cache = [None] * len(self.blocks)
 
 
 ################################################################################
@@ -374,7 +432,12 @@ def nucleus_sampling(logits, p=0.95):
 def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                   top_p=None,
                   monosemantic_info=None,
-                  do_monosemantic=False):
+                  do_monosemantic=False,
+                  write_global_step_time = False,
+                  use_kv_cache_for_eval = False,
+                  timing_writer = None,
+                  global_step_timing_log_file = None
+                  ):
     """
     A single code path for all models:
       - We keep a growing list 'context_tokens'.
@@ -385,6 +448,11 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
     """
 
     was_training = model.training
+
+    # kvcacing
+    if use_kv_cache_for_eval:
+        model.reset_cache()
+
     model.eval()
     with torch.no_grad():
         context_tokens = enc.encode(init_text)
@@ -392,7 +460,14 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
 
         for step_i in range(max_new_tokens):
             seq_tensor = torch.tensor(context_tokens, dtype=torch.long, device=device).unsqueeze(1)
-            logits_seq = model(seq_tensor)              # (seq_len,1,vocab_size)
+            start_time = time.time()
+            logits_seq = model(seq_tensor, use_cache=use_kv_cache_for_eval)
+            end_time = time.time()
+            if write_global_step_time:
+                time_took = end_time - start_time
+                print(f"TIME TAKEN FOR GLOBAL STEP: {time_took}")
+                timing_writer.writerow([time_took])
+                global_step_timing_log_file.flush()
             next_logits = logits_seq[-1, 0, :]         # shape (vocab_size,)
 
             if top_p is None:
@@ -429,6 +504,51 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
     return final_text, annotated_text
 
 
+def get_validation_loss(model, validation_loader, device, batch_size=None):
+    prev_model_state_training = model.training
+    model.eval()
+    total_val_loss = 0
+    batch_count = 0
+
+    val_batch_list = list(validation_loader)
+    if batch_size is not None:
+        random_batch = random.sample(val_batch_list, min(batch_size, len(val_batch_list)))
+    else:
+        random_batch = val_batch_list
+
+    with torch.no_grad():
+        for batch_idx, batch_tokens in enumerate(random_batch):
+            batch_tokens = batch_tokens.to(device)
+            logits = model(batch_tokens)
+            loss = compute_next_token_loss(logits, batch_tokens)
+            total_val_loss += loss.item()
+            batch_count += 1
+
+    avg_val_loss = total_val_loss / batch_count
+
+    if prev_model_state_training:
+        model.train()
+
+    return avg_val_loss
+
+
+
+def plot_train_val_loss(file_path):
+    plt.figure(figsize=(10, 6))
+    df = pd.read_csv(file_path, names=["global_step", "train_loss", "test_loss"])
+
+    plt.plot(df["global_step"], df["train_loss"], label="Train Loss", color="blue")
+    plt.plot(df["global_step"], df["test_loss"], label="Test Loss", color="red")
+
+    plt.xlabel("Global Step")
+    plt.ylabel("Loss")
+    plt.title("Training and Validation Loss over Time")
+    plt.legend()
+    plt.grid(True)
+
+    plt.show()
+
+
 ################################################################################
 # 8. Training
 ################################################################################
@@ -445,6 +565,8 @@ def train_one_model(model,
                     enc=None,
                     monosemantic_info=None,
                     checkpoint_path=None,
+                    val_loader=None,
+                    write_global_step_time=False,
                     prompt="Once upon a"):
     """
     We add `prompt` as an explicit argument so we can pass it down from main().
@@ -457,9 +579,7 @@ def train_one_model(model,
 
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')
-
     optimizer = optim.Adam(model.parameters(), lr=lr)
-
     start_time = time.time()
     next_sample_time = start_time
     global_step = 0
@@ -480,9 +600,24 @@ def train_one_model(model,
 
     # create new dir
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_dir = f"checkpoints/{model_name}_{timestamp}"
+    session_name = f"{model_name}_{timestamp}"
+    save_dir = f"checkpoints/{session_name}"
     os.makedirs(save_dir, exist_ok=True)
     # ----
+
+    # metric directory for reporting losses
+    os.makedirs("metrics", exist_ok=True)
+    metric_log_path = f"metrics/{session_name}.csv"
+    metric_log_file = open(metric_log_path, mode='a', newline='')
+    metric_writer = csv.writer(metric_log_file)
+
+    timing_writer = None
+    global_step_timing_log_file = None
+    if write_global_step_time:
+        os.makedirs("global_step_timing", exist_ok=True)
+        metric_log_path = f"global_step_timing/{session_name}.csv"
+        global_step_timing_log_file = open(metric_log_path, mode='a', newline='')
+        timing_writer = csv.writer(global_step_timing_log_file)
 
     for epoch in range(1, epochs + 1):
         model.train()
@@ -491,12 +626,12 @@ def train_one_model(model,
         partial_count = 0
 
         step_in_epoch = 0
+
         for batch_idx, batch_tokens in enumerate(loader, start=1):
             step_in_epoch += 1
             global_step += 1
 
             batch_tokens = batch_tokens.to(device)  # (seq_len, batch)
-
             logits = model(batch_tokens)  # (seq_len, batch, vocab_size)
             loss = compute_next_token_loss(logits, batch_tokens)
 
@@ -510,20 +645,21 @@ def train_one_model(model,
 
             avg_part_loss = partial_loss / partial_count
 
-            # update the loss now
-            # liveloss.update({'training loss': avg_part_loss})
-            # liveloss.send()
-
             # original
             if batch_idx % log_steps == 0:
+                val_loss = get_validation_loss(model, val_loader, device) if val_loader is not None else None
+
+                if val_loss is not None:
+                    print("writing validation loss", global_step, avg_part_loss, val_loss)
+                    metric_writer.writerow([global_step, avg_part_loss, val_loss])
+                    metric_log_file.flush()
+
                 print(f"[{model_name}] Epoch {epoch}/{epochs}, "
                       f"Step {batch_idx}/{len(loader)} (global step: {global_step}) "
                       f"Partial Avg Loss: {avg_part_loss:.4f}")
 
             if avg_part_loss < MIN_LOSS_VALUE:
                 print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")
-
-
                 try:
                     print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")
                     ckpt_path = os.path.join(save_dir, f"step_{global_step}_LOSS_{avg_part_loss:.4f}.pt")
@@ -541,17 +677,28 @@ def train_one_model(model,
                 partial_loss = 0.0
                 partial_count = 0
 
-
             current_time = time.time()
             if current_time >= next_sample_time and enc is not None:
                 with torch.no_grad():
                     print(f"\n[{model_name}] Generating sample text (greedy) at epoch={epoch}, step={batch_idx}...")
+                    start_time = time.time()
                     text_greedy, ann_greedy = generate_text(
                         model, enc, prompt, max_new_tokens=20, device=device,
                         top_p=None,
                         monosemantic_info=monosemantic_info,
-                        do_monosemantic=(monosemantic_info is not None)
+                        do_monosemantic=(monosemantic_info is not None),
+                        use_kv_cache_for_eval=model.use_cache,
+                        write_global_step_time=False,
+                        timing_writer = timing_writer,
+                        global_step_timing_log_file = global_step_timing_log_file,
                     )
+                    end_time = time.time()
+                    if write_global_step_time:
+                        time_took = end_time - start_time
+                        print(f"TIME TAKEN FOR GLOBAL STEP {global_step}: {time_took}")
+                        timing_writer.writerow([global_step, time_took])
+                        global_step_timing_log_file.flush()
+
                     print(f" Greedy Sample: {text_greedy}")
                     print(f" Annotated: {ann_greedy}\n")
 
@@ -583,6 +730,11 @@ def train_one_model(model,
                 break
 
         avg_loss = total_loss / step_in_epoch
+        avg_val_loss = get_validation_loss(model, val_loader, device)
+
+        # update the loss now
+        # liveloss.update({'training loss': avg_loss})
+        # liveloss.send()
 
         # update the loss now
         # liveloss.update({'training loss': avg_loss})
@@ -621,19 +773,30 @@ def main():
     embed_size = args.embed_size
     batch_size = int(args.batch_size)
     num_epochs = 3
+    # learning_rate = 1e-2
     # learning_rate = 1e-3
-    learning_rate = 1e-5
+    learning_rate = 1e-4
+    # learning_rate = 1e-5
 
     block_size = args.block_size
     train_subset_size = 20000
     log_interval_steps = 10
-    sample_interval_seconds = 30
+
+    # sample_interval_seconds = 1000000
+    sample_interval_seconds = 1
+
+    write_global_step_time = True if args.write_global_step_time=="TRUE" else False
+
+
+    train_test_split = 0.9
 
     max_steps_per_epoch = args.max_steps_per_epoch
     num_inner_layers = args.num_inner_mlp_layers
 
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
+
+    # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251111_060315.csv")
 
     if requested_device_id.startswith("cuda"):
         if torch.cuda.is_available():
@@ -703,16 +866,34 @@ def main():
     p_tiny = args.tinystories_weight
     if len(tinystories_seqs) == 0 and p_tiny>0:
         print("Warning: TinyStories is empty but tinystories_weight>0. That's okay, no data from it.")
+
     combined_dataset = MixedSequenceDataset(
         tinystories_seqs=tinystories_seqs,
         other_seqs=other_seqs,
         p_tiny=p_tiny
     )
 
+    # split the train to train and test dataset
+    dataset_len = len(combined_dataset)
+    train_len = int(dataset_len * train_test_split)
+    test_len = dataset_len - train_len
+
+    train_dataset, val_dataset = random_split(combined_dataset, [train_len, test_len])
+
+    print("loader size:", train_len, "test size:", test_len)
+
     train_loader = torch.utils.data.DataLoader(
-        combined_dataset,
+        train_dataset,
         batch_size=batch_size,
         shuffle=True,
+        num_workers=0,
+        collate_fn=seq_collate_fn
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
         num_workers=0,
         collate_fn=seq_collate_fn
     )
@@ -736,6 +917,8 @@ def main():
 
     transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(device)
 
+    kvcache_transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_kv_cache=True).to(device)
+
     # heads 1, blocks 1 1.916
     # heads 128, blocks 2.055
     # heads 4,  blocks min 2.6424, running 2.811
@@ -743,8 +926,8 @@ def main():
     models = {
       "kgram_mlp_seq": kgram_model,
       #   "lstm_seq": lstm_model,
-      # "kvcache_transformer": kv_transformer,
-        # "transformer": transformer, # <-- our transformer model, still at work
+      # "kvcache_transformer": kvcache_transformer,
+      "transformer": transformer, # <-- our transformer model
     }
 
 
@@ -765,6 +948,8 @@ def main():
             max_steps_per_epoch=max_steps_per_epoch,
             enc=enc,
             checkpoint_path=args.checkpoint_path,
+            write_global_step_time=write_global_step_time,
+            val_loader=val_loader,
             prompt=args.prompt  # <--- Pass the user-specified prompt here
         )
 

@@ -76,6 +76,12 @@ def parse_args():
                         help="Get the batch size.")
     parser.add_argument("--write_global_step_time", type=str, default="FALSE",)
 
+    # For LSTM
+    parser.add_argument("--hidden_size", type=int, default=512, help="Hidden layer size for LSTM")
+    parser.add_argument("--num_layers", type=int, default=2, help="Number of stacked LSTM layers")
+
+
+
     args = parser.parse_args()
     return args
 
@@ -241,14 +247,21 @@ class KGramMLPSeqModel(nn.Module):
 ################################################################################
 
 class LSTMSeqModel(nn.Module):
-    def __init__(self, vocab_size, embed_size=1024, hidden_size=1024):
+    def __init__(self, vocab_size, embed_size=1024, hidden_size=1024, num_layers=1):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.hidden_size = hidden_size
 
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=False)
+        self.lstm = nn.LSTM(
+            input_size=embed_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=0.2,
+            batch_first=True
+        )
+
         self.linear = nn.Linear(hidden_size, vocab_size)
 
     def forward(self, tokens_seq):
@@ -256,11 +269,11 @@ class LSTMSeqModel(nn.Module):
         tokens_seq: (seq_len, batch)
         => (seq_len, batch, vocab_size)
         """
-        emb = self.embedding(tokens_seq)   # (seq_len, batch, embed)
+        emb = self.embedding(tokens_seq.T)   # (seq_len, batch, embed)
         self.lstm.flatten_parameters()
         out, _ = self.lstm(emb)           # (seq_len, batch, hidden)
         logits = self.linear(out)         # (seq_len, batch, vocab_size)
-        return logits
+        return logits.transpose(0, 1)
 
 
 ################################################################################

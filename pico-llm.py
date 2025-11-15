@@ -252,6 +252,7 @@ class LSTMSeqModel(nn.Module):
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.hidden_size = hidden_size
+        self.use_cache = False
 
         self.embedding = nn.Embedding(vocab_size, embed_size)
         self.lstm = nn.LSTM(
@@ -264,7 +265,7 @@ class LSTMSeqModel(nn.Module):
 
         self.linear = nn.Linear(hidden_size, vocab_size)
 
-    def forward(self, tokens_seq):
+    def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
         => (seq_len, batch, vocab_size)
@@ -785,7 +786,7 @@ def main():
 
     embed_size = args.embed_size
     batch_size = int(args.batch_size)
-    num_epochs = 3
+    num_epochs = 50
     # learning_rate = 1e-2
     # learning_rate = 1e-3
     learning_rate = 1e-4
@@ -937,10 +938,10 @@ def main():
     # heads 4,  blocks min 2.6424, running 2.811
 
     models = {
-      "kgram_mlp_seq": kgram_model,
-      #   "lstm_seq": lstm_model,
+      #"kgram_mlp_seq": kgram_model,
+         "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
-      "transformer": transformer, # <-- our transformer model
+      #"transformer": transformer, # <-- our transformer model
     }
 
 

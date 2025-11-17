@@ -3,8 +3,8 @@ import torch
 import matplotlib.pyplot as plt
 import argparse
 import os
-import math
 import tiktoken
+import math
 
 
 # manual import since pico-llm.py has a dash in its name (can't do normal import)
@@ -19,10 +19,7 @@ LSTMSeqModel = pico_llm.LSTMSeqModel
 
 
 def visualize_attention(model, enc, prompt, device):
-    import matplotlib.pyplot as plt
-    import math
-    import torch
-    import os
+
 
     os.makedirs("interpretability_outputs", exist_ok=True)
 
@@ -224,9 +221,6 @@ def visualize_monosemantic(model, enc, prompt, device="cpu"):
 
 def visualize_kgram(model, enc, prompt, device):
 
-    import torch
-    import matplotlib.pyplot as plt
-    import os
 
     os.makedirs("interpretability_outputs", exist_ok=True)
 

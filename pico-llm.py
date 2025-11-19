@@ -22,6 +22,7 @@ import tiktoken
 
 from livelossplot import PlotLosses
 from sklearn.model_selection import train_test_split
+from KgramCNN import MultiChannelCNN
 from torch.utils.data import random_split
 
 # os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
@@ -915,6 +916,12 @@ def main():
     ############################################################################
     # Models
     ############################################################################
+    kgram_CNN_model = MultiChannelCNN(
+            vocab_size=vocab_size,
+            k=k,
+            embed_dim=embed_size, hidden_dim=embed_size  
+            ).to(device)
+
     kgram_model = KGramMLPSeqModel(
         vocab_size=vocab_size,
         k=k,
@@ -938,10 +945,12 @@ def main():
     # heads 4,  blocks min 2.6424, running 2.811
 
     models = {
+
       #"kgram_mlp_seq": kgram_model,
-         "lstm_seq": lstm_model,
+        #  "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       #"transformer": transformer, # <-- our transformer model
+      "kgram_cnn_seq": kgram_CNN_model,
     }
 
 

@@ -27,7 +27,7 @@ from torch.utils.data import random_split
 # os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.9"
 
 # this shit might be really scary
-# os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 import matplotlib.pyplot as plt
 from IPython.display import clear_output  # works nicely in notebooks
@@ -75,6 +75,8 @@ def parse_args():
     parser.add_argument("--batch_size", type=str, default="4",
                         help="Get the batch size.")
     parser.add_argument("--write_global_step_time", type=str, default="FALSE",)
+
+    parser.add_argument("--num_epochs", type=str, default="3", )
 
     args = parser.parse_args()
     return args
@@ -268,6 +270,39 @@ class LSTMSeqModel(nn.Module):
 #    Very slow Python loop for training. Multi-head sums head outputs.
 ################################################################################
 
+def apply_rope(q, k, seq_len, d_model, device):
+    """
+    q, k: (seq_len, batch, d_model)
+    Returns: rotated q, k of same shape
+    """
+    theta = 10000 ** (-2 * torch.arange(d_model // 2, dtype=torch.float32, device=device) / d_model)
+
+    positions = torch.arange(seq_len, dtype=torch.float32, device=device)
+
+    angles = positions.unsqueeze(1) * theta.unsqueeze(0)
+
+    cos = torch.cos(angles)
+    sin = torch.sin(angles)
+
+    cos = cos.unsqueeze(1)
+    sin = sin.unsqueeze(1)
+
+    q_even = q[:, :, 0::2]
+    q_odd = q[:, :, 1::2]
+
+    k_even = k[:, :, 0::2]
+    k_odd = k[:, :, 1::2]
+
+    q_rotated = torch.zeros_like(q)
+    q_rotated[:, :, 0::2] = q_even * cos - q_odd * sin
+    q_rotated[:, :, 1::2] = q_even * sin + q_odd * cos
+
+    k_rotated = torch.zeros_like(k)
+    k_rotated[:, :, 0::2] = k_even * cos - k_odd * sin
+    k_rotated[:, :, 1::2] = k_even * sin + k_odd * cos
+
+    return q_rotated, k_rotated
+
 class RMSNorm(nn.Module):
     def __init__(self, dim, eps=1e-5):
         super().__init__()
@@ -284,7 +319,7 @@ class RMSNorm(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, mlp_g_hidden_layer_output=2048):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, mlp_g_hidden_layer_output=2048, use_rope=False):
         super().__init__()
         self.norm_1 = RMSNorm(d_model)
         self.attn1 = nn.MultiheadAttention(d_model, n_heads, batch_first=False)
@@ -294,6 +329,7 @@ class TransformerBlock(nn.Module):
             nn.GELU(),
             nn.Linear(mlp_g_hidden_layer_output, d_model)
         )
+        self.use_rope = use_rope
 
 
     def forward(self, x, kv_cache=None):
@@ -310,6 +346,9 @@ class TransformerBlock(nn.Module):
         query = x
         key = x
         value = x
+
+        if self.use_rope:
+            query, key = apply_rope(query, key, seq_len, x.size(-1), x.device)
 
         if kv_cache is not None:
             # we got a cache !!!!!
@@ -338,24 +377,16 @@ class TransformerBlock(nn.Module):
 
 
 class TransformerModel(nn.Module):
-    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024, use_kv_cache=False):
+    def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024, use_kv_cache=False, use_rope=False):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, d_model) # not sure about d_model
+        self.embedding = nn.Embedding(vocab_size, d_model)
         self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
-        # self.block1 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block2 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block3 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block4 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block5 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block6 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block7 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-        # self.block8 = TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output)
-
-        self.blocks = nn.ModuleList([TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output) for i in range(n_blocks)])
+        self.blocks = nn.ModuleList([TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output, use_rope) for i in range(n_blocks)])
         self.unembedding = nn.Linear(d_model, vocab_size)
         self.kv_cache = [None] * n_blocks
         self.use_cache = use_kv_cache
+        self.use_rope = use_rope
 
         pass
 
@@ -373,16 +404,7 @@ class TransformerModel(nn.Module):
                 # Starting new generation - reset cache
                 self.kv_cache = [None] * len(self.blocks)
 
-        x = x + self.position_embedding(positions)
-
-        # x = self.block1(x)
-        # x = self.block2(x)
-        # x = self.block3(x)
-        # x = self.block4(x)
-        # x = self.block5(x)
-        # x = self.block6(x)
-        # x = self.block7(x)
-        # x = self.block8(x)
+        # x = x + self.position_embedding(positions)
 
         for i in range(len(self.blocks)):
             kv_cache_layer_i = self.kv_cache[i] if use_cache else None
@@ -540,13 +562,23 @@ def plot_train_val_loss(file_path):
     plt.plot(df["global_step"], df["train_loss"], label="Train Loss", color="blue")
     plt.plot(df["global_step"], df["test_loss"], label="Test Loss", color="red")
 
+    min_train = df["train_loss"].min()
+    min_test = df["test_loss"].min()
+
+    plt.axhline(y=min_train, linestyle="--", color="blue", label=f"Min Train Loss = {min_train:.4f}")
+    plt.axhline(y=min_test, linestyle="--", color="red", label=f"Min Test Loss = {min_test:.4f}")
+
+
     plt.xlabel("Global Step")
     plt.ylabel("Loss")
     plt.title("Training and Validation Loss over Time")
     plt.legend()
     plt.grid(True)
 
-    plt.show()
+    # plt.show()
+
+    file_name = file_path.split("/")[-1]
+    plt.savefig("./figures/" + file_name + ".png")
 
 
 ################################################################################
@@ -772,23 +804,26 @@ def main():
 
     embed_size = args.embed_size
     batch_size = int(args.batch_size)
-    num_epochs = 3
+    # num_epochs = 3
+
+    num_epochs = int(args.num_epochs)
     # learning_rate = 1e-2
     # learning_rate = 1e-3
-    learning_rate = 1e-4
-    # learning_rate = 1e-5
+    # learning_rate = 1e-4
+    learning_rate = 1e-5
+
 
     block_size = args.block_size
     train_subset_size = 20000
-    log_interval_steps = 10
+    log_interval_steps = 1
 
     # sample_interval_seconds = 1000000
-    sample_interval_seconds = 1
+    sample_interval_seconds = 10
 
     write_global_step_time = True if args.write_global_step_time=="TRUE" else False
 
 
-    train_test_split = 0.9
+    train_test_split = 0.8
 
     max_steps_per_epoch = args.max_steps_per_epoch
     num_inner_layers = args.num_inner_mlp_layers
@@ -796,7 +831,10 @@ def main():
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
 
-    # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251111_060315.csv")
+    plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251118_143824.csv")
+    while True:
+        a = 1
+
 
     if requested_device_id.startswith("cuda"):
         if torch.cuda.is_available():
@@ -917,6 +955,8 @@ def main():
 
     transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(device)
 
+    transformer_rope = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_rope=True).to(device)
+
     kvcache_transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_kv_cache=True).to(device)
 
     # heads 1, blocks 1 1.916
@@ -924,10 +964,11 @@ def main():
     # heads 4,  blocks min 2.6424, running 2.811
 
     models = {
-      "kgram_mlp_seq": kgram_model,
+      # "kgram_mlp_seq": kgram_model,
       #   "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       "transformer": transformer, # <-- our transformer model
+        # "transformer_rope": transformer_rope,
     }
 
 

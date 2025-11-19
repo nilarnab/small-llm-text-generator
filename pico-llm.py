@@ -78,6 +78,11 @@ def parse_args():
 
     parser.add_argument("--num_epochs", type=str, default="3", )
 
+    # For LSTM
+    parser.add_argument("--hidden_size", type=int, default=512, help="Hidden layer size for LSTM")
+    parser.add_argument("--num_layers", type=int, default=2, help="Number of stacked LSTM layers")
+
+
     args = parser.parse_args()
     return args
 
@@ -243,26 +248,34 @@ class KGramMLPSeqModel(nn.Module):
 ################################################################################
 
 class LSTMSeqModel(nn.Module):
-    def __init__(self, vocab_size, embed_size=1024, hidden_size=1024):
+    def __init__(self, vocab_size, embed_size=1024, hidden_size=1024, num_layers=1):
         super().__init__()
         self.vocab_size = vocab_size
         self.embed_size = embed_size
         self.hidden_size = hidden_size
+        self.use_cache = False
 
         self.embedding = nn.Embedding(vocab_size, embed_size)
-        self.lstm = nn.LSTM(embed_size, hidden_size, batch_first=False)
+        self.lstm = nn.LSTM(
+            input_size=embed_size,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=0.2,
+            batch_first=True
+        )
+
         self.linear = nn.Linear(hidden_size, vocab_size)
 
-    def forward(self, tokens_seq):
+    def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
         => (seq_len, batch, vocab_size)
         """
-        emb = self.embedding(tokens_seq)   # (seq_len, batch, embed)
+        emb = self.embedding(tokens_seq.T)   # (seq_len, batch, embed)
         self.lstm.flatten_parameters()
         out, _ = self.lstm(emb)           # (seq_len, batch, hidden)
         logits = self.linear(out)         # (seq_len, batch, vocab_size)
-        return logits
+        return logits.transpose(0, 1)
 
 
 ################################################################################
@@ -369,9 +382,7 @@ class TransformerBlock(nn.Module):
             x_old = x_old + attention_out1
 
         x = x_old + self.mlp_g_1(self.norm_2(x_old))
-
         new_kv_cache = {"key": key.detach(), "value": value.detach()}
-
 
         return x, new_kv_cache
 
@@ -393,18 +404,11 @@ class TransformerModel(nn.Module):
     def forward(self, tokens_seq, use_cache=False):
         x = self.embedding(tokens_seq)
 
-        batch_size, seq_len = tokens_seq.shape
-
         if use_cache and self.kv_cache[0] is not None:
-            cache_len = self.kv_cache[0]['key'].size(1)
-            positions = torch.arange(cache_len, cache_len + seq_len, device=tokens_seq.device).unsqueeze(0)
+            pass
         else:
-            positions = torch.arange(seq_len, device=tokens_seq.device).unsqueeze(0)
             if use_cache:
-                # Starting new generation - reset cache
                 self.kv_cache = [None] * len(self.blocks)
-
-        # x = x + self.position_embedding(positions)
 
         for i in range(len(self.blocks)):
             kv_cache_layer_i = self.kv_cache[i] if use_cache else None
@@ -559,6 +563,8 @@ def plot_train_val_loss(file_path):
     plt.figure(figsize=(10, 6))
     df = pd.read_csv(file_path, names=["global_step", "train_loss", "test_loss"])
 
+    # df['global_step'] = range(len(df["train_loss"]))
+
     plt.plot(df["global_step"], df["train_loss"], label="Train Loss", color="blue")
     plt.plot(df["global_step"], df["test_loss"], label="Test Loss", color="red")
 
@@ -579,7 +585,8 @@ def plot_train_val_loss(file_path):
 
     file_name = file_path.split("/")[-1]
     plt.savefig("./figures/" + file_name + ".png")
-
+    print("figure saved, exiting")
+    exit(0)
 
 ################################################################################
 # 8. Training
@@ -831,10 +838,7 @@ def main():
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
 
-    plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251118_143824.csv")
-    while True:
-        a = 1
-
+    # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251113_102120.csv")
 
     if requested_device_id.startswith("cuda"):
         if torch.cuda.is_available():
@@ -965,10 +969,14 @@ def main():
 
     models = {
       # "kgram_mlp_seq": kgram_model,
-      #   "lstm_seq": lstm_model,
+        "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
-      "transformer": transformer, # <-- our transformer model
+      # "transformer": transformer, # <-- our transformer model
         # "transformer_rope": transformer_rope,
+      #"kgram_mlp_seq": kgram_model,
+         # "lstm_seq": lstm_model,
+      # "kvcache_transformer": kvcache_transformer,
+      #"transformer": transformer, # <-- our transformer model
     }
 
 

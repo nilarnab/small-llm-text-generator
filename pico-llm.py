@@ -289,31 +289,23 @@ def apply_rope(q, k, seq_len, d_model, device):
     q, k: (seq_len, batch, d_model)
     Returns: rotated q, k of same shape
     """
+    q_rotated = torch.zeros_like(q)
+    k_rotated = torch.zeros_like(k)
+
     theta = 10000 ** (-2 * torch.arange(d_model // 2, dtype=torch.float32, device=device) / d_model)
 
-    positions = torch.arange(seq_len, dtype=torch.float32, device=device)
+    for pos in range(seq_len):
+        for i in range(d_model // 2):
+            angle = pos * theta[i]
+            cos_val = torch.cos(angle)
+            sin_val = torch.sin(angle)
 
-    angles = positions.unsqueeze(1) * theta.unsqueeze(0)
+            q_rotated[pos, :, 2 * i] = q[pos, :, 2 * i] * cos_val - q[pos, :, 2 * i + 1] * sin_val
+            q_rotated[pos, :, 2 * i + 1] = q[pos, :, 2 * i] * sin_val + q[pos, :, 2 * i + 1] * cos_val
 
-    cos = torch.cos(angles)
-    sin = torch.sin(angles)
+            k_rotated[pos, :, 2 * i] = k[pos, :, 2 * i] * cos_val - k[pos, :, 2 * i + 1] * sin_val
+            k_rotated[pos, :, 2 * i + 1] = k[pos, :, 2 * i] * sin_val + k[pos, :, 2 * i + 1] * cos_val
 
-    cos = cos.unsqueeze(1)
-    sin = sin.unsqueeze(1)
-
-    q_even = q[:, :, 0::2]
-    q_odd = q[:, :, 1::2]
-
-    k_even = k[:, :, 0::2]
-    k_odd = k[:, :, 1::2]
-
-    q_rotated = torch.zeros_like(q)
-    q_rotated[:, :, 0::2] = q_even * cos - q_odd * sin
-    q_rotated[:, :, 1::2] = q_even * sin + q_odd * cos
-
-    k_rotated = torch.zeros_like(k)
-    k_rotated[:, :, 0::2] = k_even * cos - k_odd * sin
-    k_rotated[:, :, 1::2] = k_even * sin + k_odd * cos
 
     return q_rotated, k_rotated
 
@@ -330,6 +322,20 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(mean_square + epsilon)
         x_hat = x / rms
         return self.w * x_hat
+
+
+
+# class HomeMadeAttention(nn.Module):
+#     def __init__(self, d_model, n_heads):
+#         super().__init__()
+#
+#         self.d_model = d_model
+#         self.n_heads = n_heads
+#         self.d_head = d_model // n_heads # hoping this division works out!!
+#
+#         self.W_Q = nn.Linear(d_model, d_model)
+#         self.W_K = nn.Linear(d_model, d_model)
+#         self.W_V = nn.Linear(d_model, d_model)
 
 
 class TransformerBlock(nn.Module):
@@ -392,7 +398,6 @@ class TransformerModel(nn.Module):
     def __init__(self, vocab_size=50257, d_model=1024, n_heads=2, n_blocks=4, mlp_g_hidden_layer_output=2048, max_seq_len=1024, use_kv_cache=False, use_rope=False):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.position_embedding = nn.Embedding(max_seq_len, d_model)
 
         self.blocks = nn.ModuleList([TransformerBlock(vocab_size, d_model, n_heads, mlp_g_hidden_layer_output, use_rope) for i in range(n_blocks)])
         self.unembedding = nn.Linear(d_model, vocab_size)
@@ -839,7 +844,7 @@ def main():
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
 
-    # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/transformer_20251113_102120.csv")
+    # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/graph_pre_truncated_1000.csv")
 
     if requested_device_id.startswith("cuda"):
         if torch.cuda.is_available():
@@ -976,7 +981,7 @@ def main():
 
     models = {
       # "kgram_mlp_seq": kgram_model,
-        "lstm_seq": lstm_model,
+      #   "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       # "transformer": transformer, # <-- our transformer model
         # "transformer_rope": transformer_rope,
@@ -988,8 +993,9 @@ def main():
       #"kgram_mlp_seq": kgram_model,
         #  "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
-      #"transformer": transformer, # <-- our transformer model
-      "kgram_cnn_seq": kgram_CNN_model,
+      "transformer": transformer, # <-- our transformer model
+        # "transformer_rope": transformer_rope,
+      # "kgram_cnn_seq": kgram_CNN_model,
     }
 
 

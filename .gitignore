@@ -4,3 +4,6 @@ checkpoints
 metrics
 global_step_timing
 trained_models
+sft_checkpoints
+*.txt
+*.xlsx

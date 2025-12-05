@@ -1,0 +1,29 @@
+is any reason why we don’t get a grade when we submit for our quiz or were we not suppose to know about it yet ? It'll be revealed when the testing period is up.  If this is super annoying I'll consider adjusting it
+i don’t think the quizzes are annoying ; just desperate to see my grade I'm happy to revisit all of these policies, also feel free to talk to me during the break in class. lastly I realize now it's super annoying to have the quiz deadline 10:10pm, meaning I can't even discuss answers in class.  I'll reconsider ..
+In the Gradescope interface, I got an option to select pages corresponding to my questions, but I did not get a place to draw boxes. I am not sure how to do it. "ok that is my bad
+indeed i don't think gradescope has any box drawing interface with the way i set thigns up
+and it's just selecting pages ...
+i'll fix this for homework 2, thanks"
+does it mean that we will have to put answer for each problem in a separate page then? "no, multiple problems can share a page
+"
+Hello Professor, I would like to confirm the due date for HW1. In the syllabus it says Sep 30 at noon (with a 3-day late due policy, that would be Oct 3), but Gradescope shows Oct 4. Could you please clarify which one is the final deadline? Also, if I submit after Sep 30, will it be counted as a late submission with penalty? Thank you! the 3 days are spread across the whole semester, you don't get them per assignment
+o1 refers to one of the open ai models built for reasoning aka inference "the key difference of o1 and friends is one can not bound the time they need to produce their first token as a simple function of the input length; they are performing a very basic form of search at inference (prediction) time
+"
+Hi, I was checking on our website for project details, but I don't see anything, does anyone know about what we are going to do for the project? I'll put project info up a little after pico-llm info goes up, please hold questions until then 
+I have the same issue, I did all the hw proofs by hand so I uploaded all my hand written work into a pdf let's discuss tuesday when i talk about the grading pipeline.  i did set up some ocr pipeline but it's not parsing everyone's handins yet.
+When can we decide what time we’ll do the piccolo llm presentation? This is on the first page of the pico-llm PDF; a google doc will be released before November 10, and times are all settled by November 12.
+there is quiz today is it ? no quiz and sorry i completely vaporized for a week
+Welcome back sir my bad :(((((((((
+"rough semester huh
+" no excuses, you guys deserve better, i'm sorry
+Where can all the typed notes from all lectures be found? specifically second notes pdf . Lectures one to seven and nine to twelve are all there; lectures 8,13,14 still pending.
+"Dear Prof, I understand the pdf is still being finalized. Just a quick question to help with early planning 🙏
+: if we choose to extend Pico-LLM for the final poster session, could you confirm whether the optional components in the pico-llm pdf remain relevant, or should we look for something new?" "you should do something beyond what you did for pico-llm
+"
+Ok. Thanks, Prof. Just to clarify. We’re considering an optional-section topic we didn’t cover in the midterm. Would choosing an unattempted topic still count? the project writeup is clear that an option is to extend what you did for pico-llm.  I make no guarantees on how carefully I check whether you genuinely extended pico-llm
+hi Prof ... if im not mistaken , it seems like the autograder is hiding the grades from us due to course settings you chose ugh indeed, the whole point of the autograder was to provide instant feedback.  I had a bug and believe I fixed it, but you have to resubmit your assignment to see; can you try?
+it works exactly how you predicted now . thank you !! thanks for catching my bug, my bad
+dont kill me but for some reason there's a weird bug when it comes to question 1a and 1e -- in my submission: 1a was (3/3) and 1e was (2.5/3) i think we're a few centuries removed from that sort of punishment in classrooms
+for a second , i thought they were purposely correlated - was not sure if i was going crazy at 4am but once again , thank you for clarifying "wait i didn't clarify, i just made dumb jokes
+i will check
+my reference solution does get perfect 33/33, but that's actually weird, it has bad english. so ... i should fix the rubric"

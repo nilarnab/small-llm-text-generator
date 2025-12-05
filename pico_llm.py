@@ -201,17 +201,6 @@ class KGramMLPSeqModel(nn.Module):
 
         self.net = nn.Sequential(*layers)
 
-        if hidden_dim is None:
-            hidden_dim = embed_size // 2
-
-
-        layers = [nn.Linear(k * embed_size, hidden_dim), nn.GELU()]
-        for _ in range(num_inner_layers - 1):
-            layers += [nn.Linear(hidden_dim, hidden_dim), nn.GELU()]
-        layers.append(nn.Linear(hidden_dim, vocab_size))
-
-        self.net = nn.Sequential(*layers)
-
     def forward(self, tokens_seq, use_cache=False):
         """
         tokens_seq: (seq_len, batch)
@@ -285,10 +274,6 @@ class LSTMSeqModel(nn.Module):
 ################################################################################
 
 def apply_rope(q, k, seq_len, d_model, device):
-    """
-    q, k: (seq_len, batch, d_model)
-    Returns: rotated q, k of same shape
-    """
     q_rotated = torch.zeros_like(q)
     k_rotated = torch.zeros_like(k)
 
@@ -322,7 +307,6 @@ class RMSNorm(nn.Module):
         rms = torch.sqrt(mean_square + epsilon)
         x_hat = x / rms
         return self.w * x_hat
-
 
 
 # class HomeMadeAttention(nn.Module):
@@ -405,10 +389,18 @@ class TransformerModel(nn.Module):
         self.use_cache = use_kv_cache
         self.use_rope = use_rope
 
+        self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+        self.max_seq_len = max_seq_len
+
         pass
 
     def forward(self, tokens_seq, use_cache=False):
         x = self.embedding(tokens_seq)
+        batch_size, seq_len = tokens_seq.shape
+
+        pos_ids = torch.arange(seq_len, device=tokens_seq.device)
+        pos_ids = pos_ids.unsqueeze(0).expand(batch_size, seq_len)
+        x = x + self.pos_embedding(pos_ids)
 
         if use_cache and self.kv_cache[0] is not None:
             pass
@@ -486,14 +478,18 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
         model.reset_cache()
 
     model.eval()
+    print("model is put in eval mode")
     with torch.no_grad():
         context_tokens = enc.encode(init_text)
         annotation_list = []
 
         for step_i in range(max_new_tokens):
+            # print("step i", step_i)
             seq_tensor = torch.tensor(context_tokens, dtype=torch.long, device=device).unsqueeze(1)
             start_time = time.time()
+            # print("getting logit sequence")
             logits_seq = model(seq_tensor, use_cache=use_kv_cache_for_eval)
+            # print("logits_seq", logits_seq)
             end_time = time.time()
             if write_global_step_time:
                 time_took = end_time - start_time
@@ -509,6 +505,8 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                 chosen_token = nucleus_sampling(next_logits, p=top_p)
 
             context_tokens.append(chosen_token)
+
+            # print("Enclosed", enc.decode(context_tokens))
 
             if do_monosemantic and monosemantic_info is not None:
                 neighbors = monosemantic_analysis_for_token(
@@ -619,8 +617,6 @@ def train_one_model(model,
     # for animated view of the los
     liveloss = PlotLosses()
 
-    # for animated view of the los
-    liveloss = PlotLosses()
 
     # we track the MIN LOSS VALUE so that only minimum loss is allowed
     MIN_LOSS_VALUE = float('inf')
@@ -633,11 +629,12 @@ def train_one_model(model,
         print(f"\n Loading checkpoint from: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
 
-        model.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        print("loaded model with checkpoint")
+        # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         start_epoch = checkpoint.get('epoch', 1)
         global_step = checkpoint.get('global_step', 0)
-        MIN_LOSS_VALUE = checkpoint.get('loss', float('inf'))
+        # MIN_LOSS_VALUE = checkpoint.get('loss', float('inf'))
 
         print(f" Resumed from epoch {start_epoch}, global_step {global_step}, previous loss {MIN_LOSS_VALUE:.4f}")
     else:
@@ -831,7 +828,7 @@ def main():
     log_interval_steps = 1
 
     # sample_interval_seconds = 1000000
-    sample_interval_seconds = 10
+    sample_interval_seconds = 60
 
     write_global_step_time = True if args.write_global_step_time=="TRUE" else False
 
@@ -843,6 +840,7 @@ def main():
 
     # NEW: pick device from args.device_id, fallback to cpu if needed
     requested_device_id = args.device_id
+
 
     # plot_train_val_loss("/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/metrics/graph_pre_truncated_1000.csv")
 
@@ -971,7 +969,7 @@ def main():
 
     transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(device)
 
-    transformer_rope = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_rope=True).to(device)
+    # transformer_rope = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_rope=True).to(device)
 
     kvcache_transformer = TransformerModel(d_model=768, n_heads=12, n_blocks=12, use_kv_cache=True).to(device)
 
@@ -981,6 +979,8 @@ def main():
 
     models = {
       # "kgram_mlp_seq": kgram_model,
+
+      #   "lstm_seq": lstm_model,
       #   "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       # "transformer": transformer, # <-- our transformer model
@@ -988,13 +988,13 @@ def main():
       #"kgram_mlp_seq": kgram_model,
          # "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
-      #"transformer": transformer, # <-- our transformer model
+      # "transformer": transformer, # <-- our transformer model
 
       #"kgram_mlp_seq": kgram_model,
         #  "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
       "transformer": transformer, # <-- our transformer model
-        # "transformer_rope": transformer_rope,
+      #   "transformer_rope": transformer_rope,
       # "kgram_cnn_seq": kgram_CNN_model,
     }
 

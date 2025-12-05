@@ -36,6 +36,7 @@ from IPython.display import clear_output  # works nicely in notebooks
 ################################################################################
 # 1. Command-line arg parsing
 ################################################################################
+SAVE_EVERY_N_STEPS = 100
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train multiple k-gram or sequence-based models on TinyStories and/or custom text files.")
@@ -699,6 +700,17 @@ def train_one_model(model,
                 print(f"[{model_name}] Epoch {epoch}/{epochs}, "
                       f"Step {batch_idx}/{len(loader)} (global step: {global_step}) "
                       f"Partial Avg Loss: {avg_part_loss:.4f}")
+
+            if global_step % SAVE_EVERY_N_STEPS == 0:
+                step_ckpt = os.path.join(save_dir, f"step_{global_step}_LOSS_{loss.item():.4f}.pt")
+                torch.save({
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'loss': loss.item()
+                }, step_ckpt)
+                print(f"  → Checkpoint saved: step_{global_step}")
 
             if avg_part_loss < MIN_LOSS_VALUE:
                 print(f"New lowest loss value {avg_part_loss:.4f} found, saving it.")

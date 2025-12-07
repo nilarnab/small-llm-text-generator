@@ -14,10 +14,89 @@ DEVICE = "mps"
 os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 
+def test_post_trained_model(pessage, question, checkpoint_path):
+
+    model = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(DEVICE)
+    print("Loading the model...")
+
+
+    checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    print("Model loaded successfully!")
+
+    model.eval()
+    sample_question = f"Passage: {pessage}\nUser: {question}"
+    sample_prompt = f"{sample_question}\nAssistant:"
+    with torch.no_grad():
+        out, _ = generate_text(
+                        model=model,
+                        top_p=0.15,
+                        enc=enc,
+                        init_text=sample_prompt,
+                        max_new_tokens=100,
+                        device=DEVICE,
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+
+                    )
+        print(f"    Q: {sample_question}")
+        print(f"    A (0.15): {out.split('Assistant:')[-1].strip()}")
+        print()
+        out, _ = generate_text(
+                        model=model,
+                        top_p=0.50,
+                        enc=enc,
+                        init_text=sample_prompt,
+                        max_new_tokens=100,
+                        device=DEVICE,
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+                    )
+
+        print(f"    Q: {sample_question}")
+        print(f"    A (0.50): {out.split('Assistant:')[-1].strip()}")
+        print()
+
+        out, _ = generate_text(
+                        model=model,
+                        top_p=0.95,
+                        enc=enc,
+                        init_text=sample_prompt,
+                        max_new_tokens=100,
+                        device=DEVICE,
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+
+                    )
+
+        print(f"    Q: {sample_question}")
+        print(f"    A (0.95): {out.split('Assistant:')[-1].strip()}")
+        print()
+    print("voluntarily exiting after test...")
+    exit(0)
+
+
+# TRAIN OR TEST MODE
+# test_post_trained_model(
+#     pessage="He redressed and left the side room, boiling with concern. However, he found Denkmal at a desk, reading Emily’s medical chart; she was off, he realized, with a female nurse, so everything was all right.",
+#     question="was Denkmal with a female nurse",
+#     checkpoint_path="/Users/nilarnabdebnath/Documents/course_work/ml/small-llm-text-generator/sft_checkpoints/transformersft_20251206_191844/step_3350_LOSS_0.3269.pt"
+# )
+
 def format_row(row):
     question = str(row["QUESTION"]).strip()
     answer = str(row["ANSWER"]).strip()
     return f"User: {question}\nAssistant: {answer}"
+
+
+def format_row_pessage_question_answer(row):
+    passage = str(row["passage"]).strip()
+    question = str(row["question"]).strip()
+    answer = str(row["answer"]).strip()
+    answer = answer.replace("True", "yes").replace("False", "no")
+    print("Formatted:", passage, question, "answer:", answer)
+    return f"Passage: {passage}\nUser: {question}\nAssistant: {answer}"
+
 
 
 def encode_for_sft(text):
@@ -47,6 +126,7 @@ def encode_for_sft(text):
 class SFTDataset(torch.utils.data.Dataset):
     def __init__(self, df):
         self.texts = [format_row(r) for _, r in df.iterrows()]
+        # self.texts = [format_row_pessage_question_answer(r) for _, r in df.iterrows()]
 
     def __len__(self):
         return len(self.texts)
@@ -93,11 +173,14 @@ def evaluate(model, dataloader, device):
 
 
 # Load and split dataset
-df = pd.read_excel('generated_logic_sft_10k.xlsx')
+# df = pd.read_excel('generated_logic_sft_10k.xlsx')
+# df = pd.read_excel('dataset/boolq_train_sft.xlsx')
+df = pd.read_excel('dataset/graph_sft_dataset.xlsx')
+
 full_dataset = SFTDataset(df)
 
 # Split into train/val (90/10)
-train_size = int(0.9 * len(full_dataset))
+train_size = int(0.98 * len(full_dataset))
 val_size = len(full_dataset) - train_size
 train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
 
@@ -110,30 +193,37 @@ val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, collate_fn=col
 # Load model
 model = TransformerModel(d_model=768, n_heads=12, n_blocks=12).to(DEVICE)
 
-checkpoint_path = "/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/checkpoints/transformer_20251202_223936/step_37327_LOSS_0.3591.pt"
+# checkpoint_path = "/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/checkpoints/transformer_20251202_223936/step_37327_LOSS_0.3591.pt"
 # checkpoint_path = "/Users/nilarnabdebnath/Documents/course_work/ml/pico-llm/checkpoints/transformer_rope_20251201_004731/step_225_LOSS_4.4066.pt"
+checkpoint_path = "trained_models/ojaswi_step_38990_LOSS_0.4860.pt"
 print("Loading the model...")
+
+
 checkpoint = torch.load(checkpoint_path, map_location=DEVICE)
+
+
+
 model.load_state_dict(checkpoint['model_state_dict'], strict=False)
 print("Model loaded successfully!")
 
 # Setup training
 optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-session_name = f"transformersft_{timestamp}"
+session_name = f"transformersft_graph_{timestamp}"
 save_dir = f"sft_checkpoints/{session_name}"
 os.makedirs(save_dir, exist_ok=True)
 
 loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)
 
 # Training parameters
-NUM_EPOCHS = 5
-SAVE_EVERY_N_STEPS = 50
+NUM_EPOCHS = 50
+SAVE_EVERY_N_STEPS = 500
 best_val_loss = float('inf')
 global_step = 0
 
 print(f"\nStarting training for {NUM_EPOCHS} epochs...")
 print(f"Checkpoints will be saved to: {save_dir}\n")
+
 
 # Training loop
 for epoch in range(NUM_EPOCHS):
@@ -173,16 +263,24 @@ for epoch in range(NUM_EPOCHS):
         num_batches += 1
 
         # Print progress
-        if (batch_idx + 1) % 100 == 0:
+        if (batch_idx + 1) % 1000 == 0:
             avg_loss = epoch_loss / num_batches
             print(
                 f"  Step {global_step} | Batch {batch_idx + 1}/{len(train_loader)} | Loss: {loss.item():.4f} | Avg Loss: {avg_loss:.4f}")
 
             # Generate sample text at end of epoch
             print(f"\n  Sample generation:")
-            sample_questions = ["If A is bigger than B and B is Bigger than C, who is tallest?", "Alice has 2 items and buys 2 more. How many items does she have?"]
+            # sample_questions = ["If A is bigger than B and B is Bigger than C, who is tallest?", "Alice has 2 items and buys 2 more. How many items does she have?"]
+            # sample_questions = [
+            #     "Passage: Good Samaritan laws offer legal protection to people who give reasonable assistance to those who are, or who they believe to be, injured, ill, in peril, or otherwise incapacitated. The protection is intended to reduce bystanders' hesitation to assist, for fear of being sued or prosecuted for unintentional injury or wrongful death. An example of such a law in common-law areas of Canada: a good Samaritan doctrine is a legal principle that prevents a rescuer who has voluntarily helped a victim in distress from being successfully sued for wrongdoing. Its purpose is to keep people from being reluctant to help a stranger in need for fear of legal repercussions should they make some mistake in treatment. By contrast, a duty to rescue law requires people to offer assistance and holds those who fail to do so liable.\nUser: do good samaritan laws protect those who help at an accident?",
+            #     "Passage: The series premiered in the United States on Starz on 12 April 2013, and its second season premiered on 22 March 2014. The series was renewed for a third season, which premiered on 24 October 2015. On 23 July 2015, Starz announced that the third season would be the show's last. However Goyer has left it open for a miniseries return. \nUser: will there be a season 4 of da vinci's demons?",
+            # ]
+            sample_questions = [
+                "User: A is conncted to B. B is connected to A.",
+                "User: A is connected to B. B is connected to C.",
+            ]
             for sample_question in sample_questions:
-                sample_prompt = f"User: {sample_question}\nAssistant:"
+                sample_prompt = f"{sample_question}\nAssistant:"
 
                 model.eval()
                 with torch.no_grad():
@@ -193,7 +291,9 @@ for epoch in range(NUM_EPOCHS):
                         init_text=sample_prompt,
                         max_new_tokens=100,
                         device=DEVICE,
-                        use_kv_cache_for_eval=None
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+
                     )
                     print(f"    Q: {sample_question}")
                     print(f"    A (0.15): {out.split('Assistant:')[-1].strip()}")
@@ -205,7 +305,8 @@ for epoch in range(NUM_EPOCHS):
                         init_text=sample_prompt,
                         max_new_tokens=100,
                         device=DEVICE,
-                        use_kv_cache_for_eval=None
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
                     )
 
                     print(f"    Q: {sample_question}")
@@ -219,13 +320,23 @@ for epoch in range(NUM_EPOCHS):
                         init_text=sample_prompt,
                         max_new_tokens=100,
                         device=DEVICE,
-                        use_kv_cache_for_eval=None
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+
                     )
 
                     print(f"    Q: {sample_question}")
                     print(f"    A (0.95): {out.split('Assistant:')[-1].strip()}")
                     print()
+
                 model.train()
+
+        if (batch_idx + 1) % 500 == 0:
+            avg_loss = epoch_loss / num_batches
+            print("getting validatino loss...")
+            val_loss = evaluate(model, val_loader, DEVICE)
+            print(
+                f"  Step {global_step} | Batch {batch_idx + 1}/{len(train_loader)} | Loss: {loss.item():.4f} | Avg Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f}")
 
 
 
@@ -240,6 +351,67 @@ for epoch in range(NUM_EPOCHS):
                 'loss': loss.item()
             }, step_ckpt)
             print(f"  → Checkpoint saved: step_{global_step}")
+
+
+
+    sample_questions = [
+                "User: A is conncted to B. B is connected to A.",
+                "User: A is connected to B. B is connected to C.",
+            ]
+
+    for sample_question in sample_questions:
+                sample_prompt = f"{sample_question}\nAssistant:"
+
+                model.eval()
+                with torch.no_grad():
+                    out, _ = generate_text(
+                        model=model,
+                        top_p=0.15,
+                        enc=enc,
+                        init_text=sample_prompt,
+                        max_new_tokens=100,
+                        device=DEVICE,
+                        use_kv_cache_for_eval=None,
+                        truncate_on="<|endoftext|>"
+
+                    )
+                    print(f"    Q: {sample_question}")
+                    print(f"    A (0.15): {out.split('Assistant:')[-1].strip()}")
+                    print()
+                    # out, _ = generate_text(
+                    #     model=model,
+                    #     top_p=0.50,
+                    #     enc=enc,
+                    #     init_text=sample_prompt,
+                    #     max_new_tokens=100,
+                    #     device=DEVICE,
+                    #     use_kv_cache_for_eval=None,
+                    #     truncate_on="<|endoftext|>"
+                    # )
+
+                    # print(f"    Q: {sample_question}")
+                    # print(f"    A (0.50): {out.split('Assistant:')[-1].strip()}")
+                    # print()
+
+                    # out, _ = generate_text(
+                    #     model=model,
+                    #     top_p=0.95,
+                    #     enc=enc,
+                    #     init_text=sample_prompt,
+                    #     max_new_tokens=100,
+                    #     device=DEVICE,
+                    #     use_kv_cache_for_eval=None,
+                    #     truncate_on="<|endoftext|>"
+
+                    # )
+
+                    print(f"    Q: {sample_question}")
+                    print(f"    A (0.95): {out.split('Assistant:')[-1].strip()}")
+                    print()
+
+                model.train()
+        
+
 
     # Calculate average training loss for epoch
     avg_train_loss = epoch_loss / num_batches
@@ -266,6 +438,8 @@ for epoch in range(NUM_EPOCHS):
         }, best_ckpt)
         print(f"  ✓ New best model saved! (Val Loss: {val_loss:.4f})")
 
+    
+
 
 
 print(f"\n{'=' * 60}")
@@ -276,10 +450,11 @@ print(f"{'=' * 60}\n")
 
 # Final test generation
 print("Final model test:")
+
 test_questions = [
-    "If A is bigger than B, which is smaller than A?",
-    "If A is bigger than B and B is Bigger than C, is C bigger than A ?",
-]
+                "User: A is conncted to B. B is connected to A.",
+                "User: A is connected to B. B is connected to C. Is A connected to C?",
+            ]
 
 model.eval()
 for question in test_questions:

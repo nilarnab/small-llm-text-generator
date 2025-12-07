@@ -36,7 +36,7 @@ from IPython.display import clear_output  # works nicely in notebooks
 ################################################################################
 # 1. Command-line arg parsing
 ################################################################################
-SAVE_EVERY_N_STEPS = 100
+SAVE_EVERY_N_STEPS = 1000
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Train multiple k-gram or sequence-based models on TinyStories and/or custom text files.")
@@ -461,7 +461,8 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                   write_global_step_time = False,
                   use_kv_cache_for_eval = False,
                   timing_writer = None,
-                  global_step_timing_log_file = None
+                  global_step_timing_log_file = None,
+                  truncate_on = None,
                   ):
     """
     A single code path for all models:
@@ -504,7 +505,7 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                 chosen_token = torch.argmax(next_logits).item()
             else:
                 chosen_token = nucleus_sampling(next_logits, p=top_p)
-
+            
             context_tokens.append(chosen_token)
 
             # print("Enclosed", enc.decode(context_tokens))
@@ -516,6 +517,10 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                 annotation_list.append((chosen_token, neighbors))
             else:
                 annotation_list.append((chosen_token, []))
+            # print(context_tokens, "choosing token", enc.decode([chosen_token]), "truncate on", truncate_on)
+            if truncate_on is not None:
+                if enc.decode([chosen_token]) == truncate_on:
+                    break
 
     model.train(was_training)
 
@@ -633,8 +638,10 @@ def train_one_model(model,
         model.load_state_dict(checkpoint['model_state_dict'], strict=False)
         print("loaded model with checkpoint")
         # optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        start_epoch = checkpoint.get('epoch', 1)
-        global_step = checkpoint.get('global_step', 0)
+        # start_epoch = checkpoint.get('epoch', 1)
+        start_epoch = 1
+        # global_step = checkpoint.get('global_step', 0)
+        global_step = 0
         # MIN_LOSS_VALUE = checkpoint.get('loss', float('inf'))
 
         print(f" Resumed from epoch {start_epoch}, global_step {global_step}, previous loss {MIN_LOSS_VALUE:.4f}")

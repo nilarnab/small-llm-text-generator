@@ -25,7 +25,7 @@ for i, row in df.iterrows():
 # === 3. Save to txt ===
 output_text = "".join(output_lines)
 
-with open("warmup_pretrain_data.txt", "w", encoding="utf-8") as f:
+with open("dataset/warmup_pretrain_data.txt", "w", encoding="utf-8") as f:
     f.write(output_text)
 
 print("Done! Saved as warmup_pretrain_data.txt")

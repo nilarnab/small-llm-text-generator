@@ -40,39 +40,27 @@ def generate_graph_dataset(n, output_file="graph_sft_dataset.xlsx", variations_p
         nodes = [chr(65 + i) for i in range(num_nodes)]
         
         if num_nodes == 1:
-            # Single isolated node - no edges
-            for variation in range(variations_per_graph):
-                input_text = generate_single_node_text(nodes[0], variation)
-                output_text = f"(){nodes[0]}"  # Isolated node encoding
-                dataset.append((input_text, output_text))
-            graph_counts[num_nodes] = variations_per_graph
+            # Skip single isolated node - we only want graphs with connections
+            graph_counts[num_nodes] = 0
+            continue
         else:
             # Generate all possible edges between nodes
             possible_edges = list(itertools.combinations(nodes, 2))
             
-            # Generate ALL possible graphs (all subsets of edges, including empty set)
-            # 2^|E| total graphs where |E| is number of possible edges
+            # Generate ALL possible graphs with at least one edge
+            # 2^|E| - 1 total graphs (excluding the empty graph)
             all_graphs = []
             
-            # Empty graph (nodes exist but no edges)
-            all_graphs.append([])
-            
-            # All non-empty subsets of edges
+            # All non-empty subsets of edges (skip empty graph)
             for r in range(1, len(possible_edges) + 1):
                 for edge_subset in itertools.combinations(possible_edges, r):
                     all_graphs.append(list(edge_subset))
             
-            # Generate variations for each graph structure
+            # Generate variations for each graph structure (all have edges now)
             for graph_edges in all_graphs:
                 for variation in range(variations_per_graph):
-                    if len(graph_edges) == 0:
-                        # Disconnected nodes
-                        input_text = generate_disconnected_nodes_text(nodes, variation)
-                        output_text = generate_output_encoding([], nodes)
-                    else:
-                        input_text = generate_input_text(graph_edges, connection_phrases, variation)
-                        output_text = generate_output_encoding(graph_edges, nodes)
-                    
+                    input_text = generate_input_text(graph_edges, connection_phrases, variation)
+                    output_text = generate_output_encoding(graph_edges, nodes)
                     dataset.append((input_text, output_text))
             
             graph_counts[num_nodes] = len(all_graphs) * variations_per_graph
@@ -82,16 +70,17 @@ def generate_graph_dataset(n, output_file="graph_sft_dataset.xlsx", variations_p
     
     # Write to Excel
     for question, answer in dataset:
+        print("Question:", question, "Answer:", answer)
         ws.append([question, answer])
     
     wb.save(output_file)
     
     print(f"Dataset generated with {len(dataset)} examples")
     print("\nBreakdown by number of nodes:")
-    for num_nodes in range(1, n + 1):
+    for num_nodes in range(2, n + 1):  # Start from 2 since we skip isolated nodes
         num_edges = num_nodes * (num_nodes - 1) // 2
-        num_graphs = 2 ** num_edges
-        print(f"  {num_nodes} nodes: {num_graphs} possible graphs × {variations_per_graph} variations = {graph_counts[num_nodes]} examples")
+        num_graphs = 2 ** num_edges - 1  # Subtract 1 to exclude empty graph
+        print(f"  {num_nodes} nodes: {num_graphs} possible graphs (with edges) × {variations_per_graph} variations = {graph_counts[num_nodes]} examples")
     print(f"\nSaved to {output_file}")
     return len(dataset)
 
@@ -201,17 +190,14 @@ def generate_output_encoding(edges, all_nodes):
     for node in adjacency:
         adjacency[node] = sorted(set(adjacency[node]))
     
-    # Generate encoding for ALL nodes (including isolated ones)
+    # Generate encoding for nodes that have connections only
     encodings = []
     for node in sorted(all_nodes):
         if node in adjacency and adjacency[node]:
-            sources = ",".join(adjacency[node])
-            encodings.append(f"({sources}){node}")
-        else:
-            # Isolated node
-            encodings.append(f"(){node}")
+            sources = " ".join(adjacency[node])
+            encodings.append(f"{sources} - {node}")
     
-    return ";".join(encodings)
+    return ", ".join(encodings)
 
 
 # Example usage
@@ -222,10 +208,9 @@ if __name__ == "__main__":
     total = generate_graph_dataset(n, "dataset/graph_sft_dataset.xlsx", variations_per_graph=num_variations)
     
     print(f"\nExpected totals:")
-    print(f"1 node:  2^0 = 1 graph  (isolated node)")
-    print(f"2 nodes: 2^1 = 2 graphs (no edge, or A-B)")
-    print(f"3 nodes: 2^3 = 8 graphs (all combinations of 3 possible edges)")
-    print(f"Total: (1 + 2 + 8) × {num_variations} = {11 * num_variations} examples")
+    print(f"2 nodes: 2^1 - 1 = 1 graph  (A-B)")
+    print(f"3 nodes: 2^3 - 1 = 7 graphs (all combinations with at least one edge)")
+    print(f"Total: (1 + 7) × {num_variations} = {8 * num_variations} examples")
     
     # Print some examples
     print("\n" + "="*80)
@@ -234,23 +219,19 @@ if __name__ == "__main__":
     
     connection_phrases = ["connected to", "joined to", "linked to"]
     
-    # Example 1: Isolated node
-    print(f"Input:  Node A exists.")
-    print(f"Output: ()A")
-    print()
-    
-    # Example 2: Two disconnected nodes
-    print(f"Input:  Nodes A and B exist with no connections.")
-    print(f"Output: ()A;()B")
-    print()
-    
-    # Example 3: Simple 2-node graph
+    # Example 1: Simple 2-node graph
     edges = [("A", "B")]
     print(f"Input:  {generate_input_text(edges, connection_phrases, 0)}")
     print(f"Output: {generate_output_encoding(edges, ['A', 'B'])}")
     print()
     
-    # Example 4: 3-node triangle
+    # Example 2: 3-node chain
+    edges = [("A", "B"), ("B", "C")]
+    print(f"Input:  {generate_input_text(edges, connection_phrases, 1)}")
+    print(f"Output: {generate_output_encoding(edges, ['A', 'B', 'C'])}")
+    print()
+    
+    # Example 3: 3-node triangle
     edges = [("A", "B"), ("B", "C"), ("A", "C")]
     print(f"Input:  {generate_input_text(edges, connection_phrases, 2)}")
     print(f"Output: {generate_output_encoding(edges, ['A', 'B', 'C'])}")

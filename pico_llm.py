@@ -209,28 +209,28 @@ class KGramMLPSeqModel(nn.Module):
         """
         seq_len, batch_size = tokens_seq.shape
         device = tokens_seq.device
- 
+
         pad = torch.zeros(self.k - 1, batch_size, dtype=torch.long, device=device)
-        padded = torch.cat([pad, tokens_seq], dim=0)  
- 
+        padded = torch.cat([pad, tokens_seq], dim=0)
+
         context_windows = []
         for i in range(self.k):
             context_windows.append(padded[i:i + seq_len])
-        contexts = torch.stack(context_windows, dim=2)   
-        embedded = self.embedding(contexts)  
+        contexts = torch.stack(context_windows, dim=2)
+        embedded = self.embedding(contexts)
         flat = embedded.reshape(seq_len, batch_size, self.k * self.embed_size)
 
-        
-        
+
+
         chunks = torch.split(flat, self.chunk_size, dim=0)
-        
+
         logit_chunks = []
         for chunk in chunks:
-            logit_chunk = self.net(chunk) 
+            logit_chunk = self.net(chunk)
             logit_chunks.append(logit_chunk)
-            
+
         logits = torch.cat(logit_chunks, dim=0)
-         
+
         return logits
 
 
@@ -444,9 +444,11 @@ def nucleus_sampling(logits, p=0.95):
     sorted_probs, sorted_indices = torch.sort(probs, descending=True)
     cumulative = torch.cumsum(sorted_probs, dim=-1)
 
-    # n of tokens need + choosing
-    cutoff = torch.searchsorted(cumulative, torch.tensor(p, device=logits.device)).item() + 1
+    # Find cutoff - move to CPU for searchsorted operation
+    cumulative_cpu = cumulative.cpu()
+    cutoff = torch.searchsorted(cumulative_cpu, torch.tensor(p)).item() + 1
     cutoff = max(1, cutoff)
+
     top_probs = sorted_probs[:cutoff]
     top_indices = sorted_indices[:cutoff]
     top_probs = top_probs / top_probs.sum()  # normalise again
@@ -505,7 +507,7 @@ def generate_text(model, enc, init_text, max_new_tokens=20, device="cpu",
                 chosen_token = torch.argmax(next_logits).item()
             else:
                 chosen_token = nucleus_sampling(next_logits, p=top_p)
-            
+
             context_tokens.append(chosen_token)
 
             # print("Enclosed", enc.decode(context_tokens))
@@ -801,7 +803,7 @@ def train_one_model(model,
         # liveloss.update({'training loss': avg_loss})
         # liveloss.send()
 
-        if avg_loss < MIN_LOSS_VALUE:
+        if True:
             # epoch is over, possibly store the checkpoint
             try:
                 print(f"New lowest loss value {avg_loss:.4f} found, saving it.")
@@ -969,7 +971,7 @@ def main():
     kgram_CNN_model = MultiChannelCNN(
             vocab_size=vocab_size,
             k=k,
-            embed_dim=embed_size, hidden_dim=embed_size  
+            embed_dim=embed_size, hidden_dim=embed_size
             ).to(device)
 
     kgram_model = KGramMLPSeqModel(
@@ -1012,7 +1014,7 @@ def main():
       #"kgram_mlp_seq": kgram_model,
         #  "lstm_seq": lstm_model,
       # "kvcache_transformer": kvcache_transformer,
-      "transformer": transformer, # <-- our transformer model
+      "transformer_logical1_pretrain": transformer, # <-- our transformer model
       #   "transformer_rope": transformer_rope,
       # "kgram_cnn_seq": kgram_CNN_model,
     }
